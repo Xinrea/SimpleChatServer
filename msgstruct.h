@@ -32,10 +32,10 @@ struct basicMessage//12
 struct respondMessage
 {
     unsigned msgType;
-    unsigned int respondCode;
-    unsigned int ipLen;
-    char body[64];
-    char pad[52];
+    char username[8];
+    unsigned long ip;
+    unsigned port;
+    char pad[112-sizeof(unsigned long)];
 };
 
 struct loginMessage//24
@@ -45,7 +45,7 @@ struct loginMessage//24
     unsigned int accountID;
     unsigned port;
     char password[PASSLEN];
-    char pad[100];
+    char pad[104];
 };
 
 struct comfirmMessage//16
@@ -86,4 +86,5 @@ struct requestMessage//16
     char pad[112];
 };
 
-#endif
+
+#endif // MSGSTRUCT_H

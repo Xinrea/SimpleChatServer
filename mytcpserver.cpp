@@ -98,26 +98,72 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
     switch(inMessage->msgType){
     case STATE:{
         stateMessage* stateMsg = reinterpret_cast<stateMessage*>(in);
-        stateMessage* resMsg = reinterpret_cast<stateMessage*>)(out);
+        stateMessage* resMsg = reinterpret_cast<stateMessage*>(out);
         QString accountid = QString::number(stateMsg->accountID);
         QString session = QString::number(stateMsg->session);
         if(stateMsg->keepAlive)
         {
-            //TODO update info
+            if(!query.exec("SELECT * FROM onlineAccount WHERE accountid = "+accountid+" AND session = "+session))
+            {
+                qDebug()<< query.lastError();
+                resMsg->keepAlive = true;//更新失败，保持原状态不变
+                resMsg->session = stateMsg->session;
+            }
+            else if(!query.next())
+            {
+                //在线列表中没有这个帐号，需要重新登录，不得更新
+                qDebug("Log: 帐号不在在线表中");
+                resMsg->keepAlive = false;
+                resMsg->session = 0;
+            }
+            else
+            {
+                //列表中找到了这个帐号
+                qDebug("Log: 帐号在在线表中");
+                QTime currentTime = QTime::currentTime();
+                unsigned time = currentTime.hour()*3600+currentTime.minute()*60+currentTime.second();
+                if(!query.exec("UPDATE onlineAccount SET lastUpdate = "+QString::number(time)+" WHERE "+"accountid = "+accountid))
+                {
+                    qDebug()<< query.lastError();
+                    resMsg->keepAlive = true;//更新错误，保持原状态
+                    resMsg->session = stateMsg->session;
+                }
+                else
+                {
+                    qDebug("Log: 更新lastUpdate");
+                    resMsg->keepAlive = true;//更新状态正常
+                    resMsg->session = stateMsg->session;
+                }
+            }
         }
         else
         {
-            //TODO 验证信息
-            if(!query.exec("SELECT * FROM onlineAccount WHERE accountid = "+accountid+" AND "+"session = "+session))qDebug()<< query.lastError();
-            if(!query.exec("DELETE FROM onlineAccount WHERE accountid="+accountid))qDebug()<< query.lastError();
-            resMsg->keepAlive = false;
+            if(!query.exec("SELECT * FROM onlineAccount WHERE accountid = "+accountid+" AND "+"session = "+session))
+            {
+                qDebug()<< query.lastError();
+                resMsg->keepAlive = true;//下线一定失败，因此响应中为true
+            }
+            else if(!query.next())
+            {//没有在线
+                resMsg->keepAlive = false;
+            }
+            else if(!query.exec("DELETE FROM onlineAccount WHERE accountid="+accountid))
+            {
+                qDebug()<< query.lastError();
+                resMsg->keepAlive = true;//下线失败
+            }
+            else
+                {
+                qDebug("Log: 下线成功");
+                resMsg->keepAlive = false;
+            }
         }
         break;
     }
     case LOGIN:{
         //处理登录信息
         QTime currentTime = QTime::currentTime();
-        qDebug()<<"Login:Recived Login Request";
+        qDebug()<<"Log:Recived Login Request";
         loginMessage* in_loginMsg = reinterpret_cast<loginMessage*>(in);
         basicMessage* out_resMsg = reinterpret_cast<basicMessage*>(out);
         QString accountid = QString::number(in_loginMsg->accountID);
@@ -154,7 +200,7 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
             }
             else
             {
-            qDebug()<<"Log: 账号在线，修改在线信息";
+            qDebug("Log: 账号在线，修改在线信息session=%d",session);
             QString session_s = QString::number(session);
             if(!query.exec("UPDATE onlineAccount SET session="+session_s+","
                            "ip="+ip+","
@@ -183,11 +229,103 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
         break;
         }
     case FINDPWD:{
-        //
+        //处理找回密码请求
+        findpwdMessage* in_fpwdMsg = reinterpret_cast<findpwdMessage*>(in);
+        basicMessage* out_resMsg = reinterpret_cast<basicMessage*>(out);
+        QString accountid_s = QString::number(in_fpwdMsg->accountID);
+        QString comfirminfo_s(in_fpwdMsg->comfirmInfo);
+        QString password_s(in_fpwdMsg->password);
+        if(!query.exec("SELECT * FROM accountTB WHERE accountid = "+accountid_s+" AND comfirminfo = "+comfirminfo_s)){
+            qDebug()<< query.lastError();//服务器出错
+            out_resMsg->accountID = 1;//失败
+        }
+        else
+        {
+            if(query.next())
+            {
+                //表中找到该项,修改密码
+                qDebug("Log: 找到该项,进行密码修改");
+                if(!query.exec("UPDATE accountTB SET password = "+password_s+" WHERE accountid = "+accountid_s))
+                {
+                    qDebug()<< query.lastError();//修改出错
+                    out_resMsg->accountID = 1;
+                }
+                else
+                {
+                    qDebug("Log: 密码修改成功");
+                    out_resMsg->accountID = 0;//修改成功
+                    //如果被修改帐号在线,则将其下线
+                    if(!query.exec("DELETE FROM onlineAccount WHERE accountid="+accountid_s))qDebug()<<query.lastError();
+                }
+
+            }
+            else
+            {
+                //表中没有该项
+                qDebug("Log: 未找到该项,无法修改密码");
+                out_resMsg->accountID = 1;//无法进行修改
+            }
+        }
+
         break;
     }
     case REQUEST:{
-        //
+        //处理查询信息
+        requestMessage* in_reqMsg = reinterpret_cast<requestMessage*>(in);
+        respondMessage* out_resMsg = reinterpret_cast<respondMessage*>(out);
+        QString accountid = QString::number(in_reqMsg->accountID);
+        QString targetid = QString::number(in_reqMsg->requestID);
+        QString session = QString::number(in_reqMsg->session);
+        if(!query.exec("SELECT * FROM onlineAccount WHERE accountid = "+accountid+" AND session = "+session))
+        {
+            qDebug()<< query.lastError();
+            out_resMsg->msgType = 0;//查询失败
+        }
+        else if(query.next())
+        {
+            //查询到请求方的在线记录,查询请求有效
+            if(!query.exec("SELECT * FROM accountTB WHERE accountid = "+targetid))
+            {
+                qDebug()<< query.lastError();
+                out_resMsg->msgType = 0;//查询失败
+            }
+            else if(query.next())
+            {
+                //查询成功
+                qDebug("Log: 得到被查询帐号用户名");
+                out_resMsg->msgType = 1;
+                strcpy(out_resMsg->username,query.value(2).toString().toStdString().data());
+                //下面是在线帐号才有的信息
+                if(!query.exec("SELECT * FROM onlineAccount WHERE accountid = "+targetid))
+                {
+                    qDebug()<< query.lastError();
+                }
+                else if(query.next())
+                {
+                    //在线表中查找到目标账号
+                    qDebug("Log: 被查询帐号在线");
+                    out_resMsg->ip = query.value(2).toInt();
+                    out_resMsg->port = query.value(3).toInt();
+                }
+                else
+                {
+                    qDebug("Log: 被查询帐号不在线");
+                }
+
+            }
+            else
+            {
+                qDebug()<< query.lastError();
+                qDebug("Log: 被查询帐号不存在");
+                out_resMsg->msgType = 0;//查询失败,无此ID
+            }
+
+        }
+        else
+        {
+            qDebug("Log: 查询帐号无效");
+            out_resMsg->msgType = 0;//无权限查询
+        }
         break;
     }
     }
