@@ -86,8 +86,7 @@ bool myTcpServer::startListen()//connect to the host
                 }
             }
         }
-
-
+        shutdown(clientSocket,2);
     }
 }
 
@@ -310,6 +309,7 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
                 else
                 {
                     qDebug("Log: 被查询帐号不在线");
+                    out_resMsg->msgType = 2;
                 }
 
             }
