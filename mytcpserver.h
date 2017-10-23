@@ -6,6 +6,7 @@
 #include <iostream>
 #include <QtSql>
 #include "msgstruct.h"
+#include "mytcpsocket.h"
 
 class myTcpServer
 {
@@ -16,7 +17,7 @@ private:
     int errorCode;
     unsigned idnext;
     QSqlDatabase db;
-    bool respond(char* in,sockaddr_in addr, char* out);
+    unsigned respond(char* in,sockaddr_in addr, char* out);
 
 public:
     myTcpServer();

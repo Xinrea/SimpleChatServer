@@ -37,6 +37,7 @@ bool myTcpServer::config(const int port)//config socket setting, ready to connec
 
 bool myTcpServer::startListen()//connect to the host
 {
+    QSqlQuery query,querydele;
     qDebug("Log: Bind Port");
     errorCode = bind(mainSocket, (sockaddr*)&addr, sizeof(addr));
     if (errorCode != 0)
@@ -72,29 +73,81 @@ bool myTcpServer::startListen()//connect to the host
             else
             {
                 char rebuff[128];
-                if(respond(buff,clientAddr,rebuff))
+                qDebug("Log: ready to respond");
+                switch(respond(buff,clientAddr,rebuff))
                 {
+                case 0:{
                     errorCode = send(clientSocket,rebuff,128,0);
                     if (errorCode == SOCKET_ERROR)
                     {
                         std::cout << "Send failed!" << std::endl;
                     }
+                    break;
                 }
-                else
-                {
-                    std::cout << "Construct message failed" << std::endl;
+                case 1:{
+                    break;
+                }
+                case 2:{
+                    //发送离线队列
+                    qDebug("Log: 准备发送离线消息队列");
+                    errorCode = send(clientSocket,rebuff,128,0);
+                    respondMessage* infoMsg = reinterpret_cast<respondMessage*>(rebuff);
+                    if (errorCode == SOCKET_ERROR)
+                    {
+                        std::cout << "Send failed!" << std::endl;
+                    }
+                    unsigned long targetIP;
+                    unsigned targetPort;
+                    if(!query.exec("SELECT * FROM onlineAccount WHERE accountid="+QString::number(infoMsg->msgType-255)))qDebug()<< query.lastError();//从在线表中获得IP+PORT
+                    if(query.next())
+                    {
+                        targetIP = query.value(2).toInt();
+                        targetPort = query.value(3).toInt();
+                    }
+                    if(!query.exec("SELECT * FROM offlineMessage WHERE targetid="+QString::number(infoMsg->msgType-255)))qDebug()<< query.lastError();//查询离线消息，并一一发送
+                    while(query.next())
+                    {
+                        QString messageID = QString::number(query.value(0).toInt());
+                        myTcpSocket offlineSocket;
+                        basicMessage sendMsg;
+                        sendMsg.accountID = query.value(1).toInt();
+                        sendMsg.targetID = infoMsg->msgType-255;
+                        qDebug("Log: 离线消息：TO %d | %s",infoMsg->msgType-255,query.value(3).toString().toStdString().data());
+                        strcpy(sendMsg.body,query.value(3).toString().toStdString().data());
+                        offlineSocket.config(targetIP,targetPort);
+                        offlineSocket.connectToHost();
+                        offlineSocket.sendMsg(reinterpret_cast<char*>(&sendMsg));
+                        offlineSocket.disconnect();
+                        if(!querydele.exec("DELETE FROM offlineMessage WHERE targetid="+QString::number(infoMsg->msgType-255)+" AND messageID="+messageID))qDebug()<< query.lastError();
+                        qDebug("Log: 离线消息发送");
+                    }
+                    break;
                 }
             }
         }
         shutdown(clientSocket,2);
+        }
     }
 }
 
-bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
+unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
 {
     QSqlQuery query;
     basicMessage* inMessage = reinterpret_cast<basicMessage*>(in);
     switch(inMessage->msgType){
+    case BASIC:{
+        //离线消息储存
+        qDebug("Log: 收到离线消息");
+        basicMessage* basicMsg = reinterpret_cast<basicMessage*>(in);
+        basicMessage* resMsg = reinterpret_cast<basicMessage*>(out);
+        QString accountid = QString::number(basicMsg->accountID);
+        QString targetid = QString::number(basicMsg->targetID);
+        QString body(basicMsg->body);
+        QString insertStr("INSERT INTO offlineMessage (accountid,targetid,body) VALUES ("+accountid+",\""+targetid+"\",\""+body+"\")");
+        if(!query.exec(insertStr))qDebug()<< query.lastError();
+        resMsg->msgType = 255;//不产生回复信息
+        return 1;
+    }
     case STATE:{
         stateMessage* stateMsg = reinterpret_cast<stateMessage*>(in);
         stateMessage* resMsg = reinterpret_cast<stateMessage*>(out);
@@ -162,7 +215,7 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
     case LOGIN:{
         //处理登录信息
         QTime currentTime = QTime::currentTime();
-        qDebug()<<"Log:Recived Login Request";
+        qDebug()<<"Log: Recived Login Request";
         loginMessage* in_loginMsg = reinterpret_cast<loginMessage*>(in);
         basicMessage* out_resMsg = reinterpret_cast<basicMessage*>(out);
         QString accountid = QString::number(in_loginMsg->accountID);
@@ -275,6 +328,7 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
         QString accountid = QString::number(in_reqMsg->accountID);
         QString targetid = QString::number(in_reqMsg->requestID);
         QString session = QString::number(in_reqMsg->session);
+
         if(!query.exec("SELECT * FROM onlineAccount WHERE accountid = "+accountid+" AND session = "+session))
         {
             qDebug()<< query.lastError();
@@ -305,6 +359,17 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
                     qDebug("Log: 被查询帐号在线");
                     out_resMsg->ip = query.value(2).toInt();
                     out_resMsg->port = query.value(3).toInt();
+
+                    if(in_reqMsg->accountID == in_reqMsg->requestID)
+                    {
+                        if(!query.exec("SELECT * FROM offlineMessage WHERE targetid="+accountid))qDebug()<< query.lastError();
+                        if(query.next())
+                        {
+                            //有离线消息
+                            out_resMsg->msgType = in_reqMsg->accountID+255;//离线消息标记,标记特殊处理
+                            return 2;
+                        }
+                    }
                 }
                 else
                 {
@@ -329,7 +394,7 @@ bool myTcpServer::respond(char *in,sockaddr_in addr, char *out)
         break;
     }
     }
-    return true;
+    return 0;
 }
 
 void myTcpServer::initDb()
@@ -355,6 +420,12 @@ void myTcpServer::initDb()
                    "ip INT,"
                    "port INT,"
                    "lastUpdate INT)"))qDebug()<<query.lastError();
+    qDebug()<<"Create offline message table";
+    if(!query.exec("CREATE TABLE offlineMessage ("
+                   "messageID INTEGER PRIMARY KEY AUTOINCREMENT,"
+                   "accountid INT,"
+                   "targetid INT,"
+                   "body VARCHAR(112))"))qDebug()<<query.lastError();
     else if(!query.exec("INSERT INTO systemSet VALUES (1)"))qDebug()<<query.lastError();
 }
 
