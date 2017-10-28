@@ -4,6 +4,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iostream>
+#include <thread>
 #include <QtSql>
 #include "msgstruct.h"
 #include "mytcpsocket.h"
@@ -17,6 +18,8 @@ private:
     int errorCode;
     unsigned idnext;
     QSqlDatabase db;
+    int listenNumber;
+    bool run;
     unsigned respond(char* in,sockaddr_in addr, char* out);
 
 public:
@@ -25,8 +28,12 @@ public:
     void initDb();
     void showDb();
     void emptyDb();
-    bool config(const int port);//TODO:考虑一下port的类型
-    bool startListen();
+    void stop();
+    void getAccount(std::vector<QStringList> &data);
+    void getOnline(std::vector<QStringList> &data);
+    bool config(const int port, const int listenN);//TODO:考虑一下port的类型
+private:
+    void startListen();
 };
 
 #endif // MYTCPSERVER_H

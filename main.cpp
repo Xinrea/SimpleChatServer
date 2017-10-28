@@ -1,15 +1,11 @@
-#include <QCoreApplication>
-#include <iostream>
-#include "mytcpserver.h"
-using namespace std;
+#include "mainwindow.h"
+#include <QApplication>
+
 int main(int argc, char *argv[])
 {
-    QCoreApplication a(argc, argv);
-    cout << "Server Start" << endl;
-    myTcpServer server;
-    server.initDb();
-    server.showDb();
-    server.config(12000);
-    server.startListen();
+    QApplication a(argc, argv);
+    MainWindow w;
+    w.show();
+
     return a.exec();
 }

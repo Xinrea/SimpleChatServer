@@ -2,21 +2,29 @@
 #include <QTime>
 myTcpServer::myTcpServer():errorCode(0)
 {
+    db = QSqlDatabase::addDatabase("QSQLITE");
+    db.setDatabaseName("accountInfo.db");
 }
 
 
 myTcpServer::~myTcpServer()
 {
+    closesocket(mainSocket);
+    WSACleanup();
+    db.close();
 }
 
-bool myTcpServer::config(const int port)//config socket setting, ready to connect
+bool myTcpServer::config(const int port, const int listenN)//config socket setting, ready to connect
 {
+    db.open();
+    listenNumber = listenN;
     QSqlQuery query;
     //从数据库中获取接下来注册的帐号从何处开始
     if(!query.exec("SELECT * FROM systemSet"))qDebug() << query.lastError();
 
     query.next();
     idnext = query.value(0).toInt();
+    db.close();
 
     errorCode = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (errorCode != NO_ERROR) {
@@ -32,30 +40,37 @@ bool myTcpServer::config(const int port)//config socket setting, ready to connec
     addr.sin_family = AF_INET;
     addr.sin_addr.S_un.S_addr = INADDR_ANY;//任意地址
     addr.sin_port = htons(port);
+    qDebug("PORT: %d | LISTEN: %d",port,listenN);
+    run = true;
+    std::thread listenThread(&myTcpServer::startListen,this);
+    listenThread.detach();
+    //startListen();
     return true;
 }
 
-bool myTcpServer::startListen()//connect to the host
+void myTcpServer::startListen()//connect to the host
 {
+
     QSqlQuery query,querydele;
-    qDebug("Log: Bind Port");
+    qDebug("Log: Bind Port ");
     errorCode = bind(mainSocket, (sockaddr*)&addr, sizeof(addr));
     if (errorCode != 0)
     {
         std::cout << "Log: Bind failed!" << std::endl;
-        return false;
+        return;
     }
     qDebug("Log: Listen Port");
-    errorCode = listen(mainSocket,10);
+    errorCode = listen(mainSocket,listenNumber);
     if (errorCode != 0)
     {
         std::cout << "Log: Listen failed!" << std::endl;
-        return false;
+        return;
     }
-    while(true)
+    while(run)
     {
         sockaddr_in clientAddr;
         int length = sizeof(clientAddr);
+        //qDebug("Log: ready to accept");
         SOCKET clientSocket = accept(mainSocket, (sockaddr*)&clientAddr,&length);
         if(clientSocket == INVALID_SOCKET)
         {
@@ -96,6 +111,7 @@ bool myTcpServer::startListen()//connect to the host
                     {
                         std::cout << "Send failed!" << std::endl;
                     }
+                    db.open();
                     unsigned long targetIP;
                     unsigned targetPort;
                     if(!query.exec("SELECT * FROM onlineAccount WHERE accountid="+QString::number(infoMsg->msgType-255)))qDebug()<< query.lastError();//从在线表中获得IP+PORT
@@ -121,17 +137,22 @@ bool myTcpServer::startListen()//connect to the host
                         if(!querydele.exec("DELETE FROM offlineMessage WHERE targetid="+QString::number(infoMsg->msgType-255)+" AND messageID="+messageID))qDebug()<< query.lastError();
                         qDebug("Log: 离线消息发送");
                     }
+                    db.close();
                     break;
                 }
             }
         }
-        shutdown(clientSocket,2);
+        closesocket(clientSocket);
         }
     }
+    qDebug("Thread exit");
+    closesocket(mainSocket);
+    WSACleanup();
 }
 
 unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
 {
+    db.open();
     QSqlQuery query;
     basicMessage* inMessage = reinterpret_cast<basicMessage*>(in);
     switch(inMessage->msgType){
@@ -146,6 +167,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
         QString insertStr("INSERT INTO offlineMessage (accountid,targetid,body) VALUES ("+accountid+",\""+targetid+"\",\""+body+"\")");
         if(!query.exec(insertStr))qDebug()<< query.lastError();
         resMsg->msgType = 255;//不产生回复信息
+        db.close();
         return 1;
     }
     case STATE:{
@@ -210,6 +232,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
                 resMsg->keepAlive = false;
             }
         }
+        db.close();
         break;
     }
     case LOGIN:{
@@ -228,6 +251,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
         if(!query.exec("SELECT * FROM accountTB WHERE accountid = "+accountid+" AND "+"password = \""+password+"\"")){
             qDebug()<< query.lastError();
             out_resMsg->session = 0;
+            db.close();
             break;
         }
         if(!query.next())
@@ -261,6 +285,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
                            " WHERE "+"accountid="+accountid))qDebug()<< query.lastError();
             }
         }
+        db.close();
         break;
         }
     case REGISTER:{
@@ -278,6 +303,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
         if(!query.exec(insertStr))qDebug()<< query.lastError();
         if(!query.exec("UPDATE systemSet SET idnext = "+QString::number(idnext+1)))qDebug()<< query.lastError();
         idnext++;
+        db.close();
         break;
         }
     case FINDPWD:{
@@ -318,7 +344,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
                 out_resMsg->accountID = 1;//无法进行修改
             }
         }
-
+        db.close();
         break;
     }
     case REQUEST:{
@@ -367,6 +393,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
                         {
                             //有离线消息
                             out_resMsg->msgType = in_reqMsg->accountID+255;//离线消息标记,标记特殊处理
+                            db.close();
                             return 2;
                         }
                     }
@@ -391,6 +418,7 @@ unsigned myTcpServer::respond(char *in,sockaddr_in addr, char *out)
             qDebug("Log: 查询帐号无效");
             out_resMsg->msgType = 0;//无权限查询
         }
+        db.close();
         break;
     }
     }
@@ -427,18 +455,73 @@ void myTcpServer::initDb()
                    "targetid INT,"
                    "body VARCHAR(112))"))qDebug()<<query.lastError();
     else if(!query.exec("INSERT INTO systemSet VALUES (10000)"))qDebug()<<query.lastError();
+    db.close();
 }
 
 void myTcpServer::emptyDb()
 {
+    db = QSqlDatabase::addDatabase("QSQLITE");
+    db.setDatabaseName("accountInfo.db");
+    db.open();
     QSqlQuery query;
-    if(!query.exec("DELETE * FROM accountTB"))qDebug()<<query.lastError();
-    if(!query.exec("DELETE * FROM systemSet"))qDebug()<<query.lastError();
-    if(!query.exec("DELETE * FROM onlineAccount"))qDebug()<<query.lastError();
+    if(!query.exec("DELETE FROM accountTB"))qDebug()<<query.lastError();
+    if(!query.exec("DELETE FROM systemSet"))qDebug()<<query.lastError();
+    if(!query.exec("DELETE FROM onlineAccount"))qDebug()<<query.lastError();
+    if(!query.exec("INSERT INTO systemSet VALUES (10000)"))qDebug()<<query.lastError();
+    db.close();
+}
+
+void myTcpServer::stop()
+{
+    run = false;
+}
+
+void myTcpServer::getAccount(std::vector<QStringList> &data)
+{
+    db = QSqlDatabase::addDatabase("QSQLITE");
+    db.setDatabaseName("accountInfo.db");
+    db.open();
+    QSqlQuery query;
+    if(!query.exec("SELECT * FROM accountTB"))qDebug()<<query.lastError();
+    while(query.next())
+    {
+        QStringList item;
+
+        item.append(query.value(0).toString());
+        item.append(query.value(1).toString());
+        item.append(query.value(2).toString());
+        qDebug()<<item[0];
+        data.push_back(item);
+    }
+    db.close();
+}
+
+void myTcpServer::getOnline(std::vector<QStringList> &data)
+{
+    db = QSqlDatabase::addDatabase("QSQLITE");
+    db.setDatabaseName("accountInfo.db");
+    db.open();
+    QSqlQuery query;
+    if(!query.exec("SELECT * FROM onlineAccount"))qDebug()<<query.lastError();
+    while(query.next())
+    {
+        QStringList item;
+        item.append(query.value(0).toString());
+        item.append(query.value(1).toString());
+        item.append(query.value(2).toString());
+        item.append(query.value(3).toString());
+        item.append(query.value(4).toString());
+        qDebug()<<item[0];
+        data.push_back(item);
+    }
+    db.close();
 }
 
 void myTcpServer::showDb()
 {
+    db = QSqlDatabase::addDatabase("QSQLITE");
+    db.setDatabaseName("accountInfo.db");
+    db.open();
     QSqlQuery query;
     qDebug("Online Account Info");
     if(!query.exec("SELECT * FROM onlineAccount"))qDebug()<<query.lastError();
@@ -451,4 +534,5 @@ void myTcpServer::showDb()
     {
         qDebug("帐号起始分配位置IDNEXT=%d",query.value("idnext").toInt());
     }
+    db.close();
 }
