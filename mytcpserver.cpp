@@ -426,7 +426,7 @@ void myTcpServer::initDb()
                    "accountid INT,"
                    "targetid INT,"
                    "body VARCHAR(112))"))qDebug()<<query.lastError();
-    else if(!query.exec("INSERT INTO systemSet VALUES (1)"))qDebug()<<query.lastError();
+    else if(!query.exec("INSERT INTO systemSet VALUES (10000)"))qDebug()<<query.lastError();
 }
 
 void myTcpServer::emptyDb()
